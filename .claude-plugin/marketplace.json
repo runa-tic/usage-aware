@@ -1,0 +1,5 @@
+{
+  "name": "usage-aware",
+  "owner": { "name": "runa-tic" },
+  "plugins": [{ "name": "usage-aware", "source": "./" }]
+}
