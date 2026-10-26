@@ -26,11 +26,14 @@ Answer `y` to add the marketplace, then pick a scope. From a shell:
 claude plugin install usage-aware --marketplace runa-tic/usage-aware
 ```
 
-The repository is private: installing needs read access on GitHub and a git credential for github.com on the machine (an SSH key, or `gh auth login` then `gh auth setup-git`).
-
 ## Develop
 
 ```
 claude plugin validate .
 claude plugin test .
 ```
+
+## License
+
+MIT, see `LICENSE`.
+
