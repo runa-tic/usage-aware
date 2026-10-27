@@ -1,4 +1,4 @@
-import type { EngineInterface, Register, SessionCost, SessionRateLimit } from 'claude-code'
+import type { EngineInterface, Register, SessionCost, SessionRateLimit, SessionUsage } from 'claude-code'
 
 import type { Band, Resume } from '../types'
 
@@ -18,6 +18,7 @@ const bandRef = { plugin: 'usage-aware', key: 'band' } as const
 const noticeRef = { plugin: 'usage-aware', key: 'pendingNotice' } as const
 const resumeRef = { plugin: 'usage-aware', key: 'resume' } as const
 const overrideRef = { plugin: 'usage-aware', key: 'override' } as const
+const LAST = 'lastLimits' // $.store: the last reading any session saw
 
 type Input = { action?: string; prompt?: string }
 
@@ -64,6 +65,15 @@ const GUIDANCE: Record<Band, string> = {
     'Usage is getting low. Finish what is running, avoid new fan-out (parallel agents, workflows, big reviews) unless the operator agrees, and checkpoint long jobs as you go.',
   stop:
     'Usage is nearly out. New agents are blocked. Finish the current step, write a checkpoint (progress file, ledger), then call the usage tool with action resume_after_reset and a continuation prompt so the session picks itself up after the reset. If the operator may want to spend the rest anyway, ask them through AskUserQuestion with the figures in the question; on a yes, call the usage tool with action allow_agents.',
+}
+
+// A session has no reading until its first response finishes. Until then the last reading any session
+// saw stands in (windows past their reset dropped), so a session that opens near the limit is gated from
+// its first call.
+async function known($: EngineInterface, usage: SessionUsage, now: number) {
+  if (usage.rateLimits.length > 0) return { limits: usage.rateLimits, earlier: false }
+  const last = ((await $.store.get(LAST)) ?? []) as SessionRateLimit[]
+  return { limits: last.filter(w => w.resetsAt !== undefined && Date.parse(w.resetsAt) > now), earlier: true }
 }
 
 async function overrideActive($: EngineInterface, now: number) {
@@ -167,6 +177,7 @@ export const register: Register = on => {
   on('session.measure', async ($, e, next) => {
     const now = await $.clock.now()
     $.ui.status(statusLine(e.rateLimits, e.cost, now))
+    if (e.changed.includes('rateLimits') && e.rateLimits.length > 0) await $.store.set(LAST, e.rateLimits)
     if (e.changed.includes('rateLimits')) await reband($, e.rateLimits, e.cost, now)
     return next(e)
   })
@@ -175,10 +186,12 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     if (e.command !== undefined) return next(e)
     const usage = await $.session.usage()
-    const top = fullest(usage.rateLimits)
-    if (top === undefined) return next(e)
     const now = await $.clock.now()
-    const line = `[usage-aware] ${statusLine(usage.rateLimits, usage.cost, now)}. ${GUIDANCE[bandOf(top.percentUsed)]}`.trim()
+    const { limits, earlier } = await known($, usage, now)
+    const top = fullest(limits)
+    if (top === undefined) return next(e)
+    const from = earlier ? ' (last reading, from an earlier session)' : ''
+    const line = `[usage-aware] ${statusLine(limits, usage.cost, now)}${from}. ${GUIDANCE[bandOf(top.percentUsed)]}`.trim()
     await $.state.set(noticeRef, null)
     return next({ ...e, context: [...(e.context ?? []), line] })
   })
@@ -187,9 +200,8 @@ export const register: Register = on => {
     if (e.tool === TOOL) return serve($, e as unknown as Input)
 
     if (GATED.has(e.tool)) {
-      const usage = await $.session.usage()
-      const top = fullest(usage.rateLimits)
       const now = await $.clock.now()
+      const top = fullest((await known($, await $.session.usage(), now)).limits)
       if (top !== undefined && top.percentUsed >= STOP && !(await overrideActive($, now)))
         return {
           deny: `usage-aware: the ${label(top)} window is at ${top.percentUsed}% (resets in ${until(top.resetsAt, now)}), so no new agents. ${GUIDANCE.stop}`,

@@ -1,6 +1,6 @@
 {
   "name": "usage-aware",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lets a session see its plan usage and reset times, steer by them, and resume itself after a reset",
   "types": "./types/index.d.ts"
 }
